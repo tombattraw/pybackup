@@ -6,10 +6,10 @@ CONFIG_LOCATION = pathlib.Path('/etc/pybackup')
 CONFIG_FILE = CONFIG_LOCATION / 'config.yaml'
 SCRIPT_LOCATION = pathlib.Path('/bin/pybackup.py')
 BACKUP_LOCATION = pathlib.Path('/opt/backups')
-SERVICE_PATH = '/etc/systemd/system/pybackup.service'
+SERVICE_PATH = pathlib.Path('/etc/systemd/system/pybackup.service')
 ROOT = os.geteuid() == 0
 UID = os.geteuid()
-TIME = datetime.datetime.now()
+TIME = datetime.datetime.now().replace(second=0, microsecond=0)
 TIME_STR = TIME.strftime('%Y-%m-%d_%H:%M')
 LASTRUN_FILE = BACKUP_LOCATION / 'lastrun.txt'
 
@@ -18,11 +18,11 @@ with open(LASTRUN_FILE, 'r') as f:
 
 # list should give list of backed-up directories and timestamps; restore should take directory and timestamp to 
 # check file perms - don't show other users' files to nonroot users
-# hardlink intervals created at same time
 # to implement: scp, rsync, smb 
 
 # TO BACKUP:
 # rotate if needed, but don't move the first: copy it, then perform an incremental update on it.
+#   will save a considerable amount of time and network traffic if remote
 
 
 class Destination:
@@ -39,16 +39,11 @@ class Destination:
                 self.intervalDict[interval] = self.intervals[interval]
 
     def backup(self):
-        for index, interval in enumerate(self.intervalDict.keys()):
+        for interval in self.intervalDict.keys():
             interval_backup_location = BACKUP_LOCATION / interval
             interval_backup_dir = interval_backup_location / TIME_STR
 
-            # If an earlier interval was created, just link to it
-            if index != 0 and (BACKUP_LOCATION / list(self.intervalDict.keys())[0]).exists():
-                (BACKUP_LOCATION / list(self.intervalDict.keys())[0]).symlink_to(interval_backup_dir)
-                continue
-
-            if not interval_backup_location.exists(): interval_backup_location.mkdir(mode=0o700)
+            interval_backup_location.mkdir(mode=0o700)
             interval_backup_dir.mkdir(mode=0o700)
 
             
@@ -62,12 +57,34 @@ class Destination:
 class Source:
     def __init__(self, path, destinations):
         self.path = path
+        self.walk()
         self.destinations = [Destination(self.path, x, destinations[x]) for x in destinations.keys()]
+    
+    def walk(self):
+        # Create a list of file, timestamp tuples of the directories and files
+        # Sort it by path length to ensure the directories and files aren't created out of order later
+        self.dirs = sorted([p for p in self.path.rglob('*') if p.is_dir()], key=lambda p: len(p.parts))
+        self.dirs = [(p, datetime.datetime.fromtimestamp(p.stat().st_mtime)) for p in self.dirs]
+
+        self.files = sorted([p for p in self.path.rglob('*') if p.is_file()], key=lambda p: len(p.parts))
+        self.files = [(p, datetime.datetime.fromtimestamp(p.stat().st_mtime)) for p in self.dirs]
+
 
     def backup(self, destinations=None):
+        # The check is to allow partial backups to be implemented later
         if not destinations:
             for destination in self.destinations:
                 destination.backup()
+        else:
+            for destination in destinations:
+                if destination in vars(self.destinations):
+                    destObj = [x for x in self.destinations if x.dest_path == destination]
+                    backupMethod = getattr(destObj, 'backup', None)
+                    backupMethod()
+                else:
+                    print(f'Destination {destination} not found in source {self.path}')
+                    continue
+                
 
 
 
@@ -106,7 +123,8 @@ def install():
         f.write('0')
 
     with open(SERVICE_PATH, 'w') as f:
-        f.write(f'''\n[Unit]\nDescription=Pybackup\nAfter=multi-user.target\n\n[Service]\nExecStart="{SCRIPT_LOCATION} daemon"\n\n[Install]\nWantedBy=multi-user.target''')
+        f.write(f'''\n[Unit]\nDescription=Pybackup\nAfter=multi-user.target\n\n[Service]\nExecStart="{SCRIPT_LOCATION} backup"\nRestart=on-failure\nRestartSec=30\n\n[Install]\nWantedBy=multi-user.target''')
+
     SERVICE_PATH.chmod(mode=0o644)
 
     pathlib.Path('/etc/systemd/system/multi-user.target.wants/pybackup.service').symlink_to(SERVICE_PATH)
@@ -137,34 +155,12 @@ def backup():
     with open(CONFIG_FILE, 'r') as f:
         config = yaml.safe_load(f)
 
-    # Backdate the timestamp a touch to ensure that marginal files aren't missed
-    with open(LASTRUN_FILE, 'w') as f:
-        f.write(int(TIME.timestamp()) - 10)
-
     sources = [Source(x, config[x]) for x in config.keys()]
     for source in sources: source.backup()
 
-
-
-def walk(): do_stuff
-def rotate(): do_stuff
-
-'''
-source (/home/user/):
-  destination (/archive/backup):
-    - method: # literal
-      - type: (scp, rsync, smb, cp)
-      - key: /home/user/.ssh/id_rsa
-      - username: user
-      - password: password
-    - intervals: # literal
-      - minutes: 0
-      - hours: 6
-      - days: 3
-      - weeks: 4
-      - months: 6
-      - years: 0
-'''
+    # Backdate the timestamp a touch to ensure that marginal files aren't missed
+    with open(LASTRUN_FILE, 'w') as f:
+        f.write(int(TIME.timestamp()) - 2)
 
 
 
@@ -180,4 +176,3 @@ if __name__ == "__main__":
         case 'backup': backup()
         case 'cleanup': cleanup()
         case 'list': lst()
-        case 'daemon': daemon()
