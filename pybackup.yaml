@@ -1,0 +1,21 @@
+# PyBackUp config file. Controls master behavior.
+# Username controls access. The script will call itself as that username to back their files up, reading the "backupconfig.yaml" file from their home directory
+#   This is done for security. Writing your own security system is an excellent way to create all new and exciting privilege escalation vectors.
+# The allowed directories here are additional restrictions, not permissions, and recursive. Set to "/" to disable additional restrictions
+# Quota can be given as a percentage of the space on the remote drive, if applicable, or as a set size, and restrict total current and rolled backup size, not per-backup size.
+#   Some methods, like SCP, don't allow estimation of remote drive's size. 
+#   If you give a percentile quota and they use an unsupported method, the script will print a warning to the terminal and "/var/log/pybackup.log".
+#   Set to zero to avoid any limit if you want to manage disk space yourself, but this isn't recommended
+#   If the destination has no free space left, the script will print a warning to the terminal and "/var/log/pybackup.log".
+
+authorized_users:
+  - username: "user1"
+    quota: "10%"
+    allowed_dirs:
+      - "/home/user1"
+      - "/opt/"
+
+  - username: "user2"
+    quota: "10GB"
+    allowed_dirs:
+      - "/"

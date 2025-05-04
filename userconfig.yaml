@@ -1,0 +1,16 @@
+source:
+  - path: "/home/user/"
+  - destination:
+    - path: "/archive/backup/user/"
+    - method:
+      - type: # [scp, rsync, smb, cp]
+      - key: "/home/user/.ssh/id_rsa"
+      - username: # "user"
+      - password: # "password"
+    - intervals:
+      - minutes:
+      - hours: */6: 4
+      - days: */7: 7
+      - weeks: 
+      - months:
+      - years: *: 5

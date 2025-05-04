@@ -4,19 +4,28 @@ A backup management project written in Python. Run "./pybackup install" to get s
 
 Currently, nothing works. I'll first implement copies to mounted file systems like NFS or SMB, then work on mounting and unmounting at need, then rsync, then add key or password SCP support.
 
-Eventually, user-specific configurations will be implemented as well. The root user will be able to specify user-specific config file locations in the main config, which will then be read and handled without root permissions.
+The top-level configuration is in /etc/pybackup.yaml, and must be edited with root. This controls whose "$HOME/backupconfig.yaml" files will be read and backed up.
 
-The basic unit of the configuration is the Source. This is a directory somewhere in your system that you wish to back up. Each source has one or many Destinations, where its files will be backed up to.
+Example:
+authorized_users:
+  - username: "user1"
+    quota: "10%"
+    allowed_dirs:
+      - "/home/user1"
+      - "/opt/"
+
+Each user backup job will be executed as that user to prevent permission issues. This does mean that any files only readable by root must be backed up by root.
+The upside is that Linux has decades of experience managing permissions and preventing privilege escalations, and I do not.
+
+The basic unit of the user configuration is the Source. This is a directory somewhere in your system that you wish to back up. Each source has one or many Destinations, where its files will be backed up to.
 
 Each Destination has a Method and a set of Intervals.
 
 A Method is the means by which the files will be backed up. This includes the type (direct copy to mounted file system, rsync, SCP, etc) and the credential/key to enable the transfer.
 
-An Interval is at which points you want the files backed up, anywhere from integer minutes to years. This allows tiered backups, with separate limits and schedules for each interval if desired.
-    Eventually, cronjob+limit syntax will be added, something to the tune of */6: 10 to mean every 6th interval to a limit of 10, or 3: 5 to mean the third minute/hour/whatever to a limit of 5.
-    Eventually, I'll implement incremental backups on a per-interval basis
+An Interval uses cron syntax to allow tiered backups.
 
-
+Example:
 source:
   - path: "/home/user/"
   - destination:
@@ -24,12 +33,6 @@ source:
     - method:
       - type: # [scp, rsync, smb, cp]
       - key: "/home/user/.ssh/id_rsa"
-      - username: user
-      - password: "password"
-    - intervals:
-      - minutes:
-      - hours: */6: 4
-      - days: */7: 7
-      - weeks: 
-      - months:
-      - years: *: 5
+      - username: # "user"
+      - password: # "password"
+    - interval: "* - * - * - * - *"
