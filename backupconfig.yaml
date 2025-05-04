@@ -10,6 +10,10 @@ source:
           password: # "password"
     
         # Interval uses cron syntax: "minute - hour - day of month - month - day of week"
-        # Use "*" to mean every one of that interval, "*/N" for every N intervals, etc
-        # Use online cron generators for help if needed
-        interval: "* - * - * - * - *"
+        # Use "*" to mean every one of that interval, "*/N" for every N intervals
+        # Use "," to give a list of values
+        # Use '-' to give a range of values
+        # Online cron generators strongly recommended
+        # Ensure there's a space before and after each "-" between fields to prevent confusion with ranges
+        # 
+        interval: "* * * * *"

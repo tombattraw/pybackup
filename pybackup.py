@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-import os, hashlib, pathlib, argparse, yaml, sys, pwd, subprocess, datetime, shutil, gzip
+import os, hashlib, pathlib, argparse, yaml, sys, pwd, subprocess, datetime, shutil, gzip, calendar
+from collections import OrderedDict
 
 CONFIG_LOCATION = pathlib.Path('/etc/pybackup')
 CONFIG_FILE = CONFIG_LOCATION / 'config.yaml'
@@ -20,9 +21,125 @@ with open(LASTRUN_FILE, 'r') as f:
 # check file perms - don't show other users' files to nonroot users
 # to implement: scp, rsync, smb 
 
-# TO BACKUP:
-# rotate if needed, but don't move the first: copy it, then perform an incremental update on it.
-#   will save a considerable amount of time and network traffic if remote
+
+class Interval:
+    # Takes a cron-style string "*/5 - 1,3,7 - 30 - 10-12 - *"
+    # Intended use is to verify validity when instantiated, then check if the next backup should be started using "<object>.shouldBackup()"
+
+    def __init__(self, cron_string):
+        self._intervalDict = OrderedDict.fromkeys(self.FIELD_NAMES)
+
+        self._validRanges = {
+            'minute': range(0, 60),
+            'hour': range(0, 24),
+            'dayOfMonth': range(1, calendar.monthrange(TIME.year, TIME.month)[1]+1),
+            'month': range(1, 13),
+            'dayOfWeek': range(0, 8) # 0 and 7 are both Sunday
+        }
+
+        self._parse_cron_string(cron_string)
+
+
+    def _parse_cron_string(self, cron_string):
+        # Takes a cron-style string
+        # Raises ValueErrors if the number of fields is incorrect
+        # Returns lists of valid ints for each interval
+
+        FIELD_NAMES = ['minute', 'hour', 'dayOfMonth', 'month', 'dayOfWeek']
+
+        fields = cron_string.strip().split()
+        if len(fields) != 5:
+            raise ValueError("Cron string must have exactly 5 fields")
+
+        for name, value in zip(FIELD_NAMES, fields):
+            self._intervalDict[name] = self._parseInterval(name, value)
+
+
+    def _parseInterval(self, intervalType, intervalString):
+        # Takes a cron-style string for a given interval: "*/5", "1,3,7", or "2-6"
+        # Returns a list of valid values
+        # Raises ValueErrors if given values are out of range
+
+        validMin = self._validRanges[intervalType][0]
+        validMax = self._validRanges[intervalType][-1]
+        validRange = self._validRanges[intervalType]
+
+        # "/" used to set step value
+        values = []
+        if '/' in intervalString:
+            if intervalString.count('/') > 1:
+                raise ValueError('Can only have one "/" in interval')
+            intervalString, step = intervalString.split('/')
+            step = int(step)
+        else:
+            step = 1
+        
+        # "," used to denote lists of values
+        # unparsedValues is a list of strings, parsedValues is a list of integers generated from the strings
+        unparsedValues = intervalString.split(',')
+        parsedValues = []
+
+        for uV in unparsedValues:
+            # "-" used to denote ranges
+            if '-' in uV:
+                if uV.count('-') > 1:
+                    raise ValueError('Can only have one "-" in range')
+                
+                beginning, end = uV.split('-')
+                if int(beginning) < validMin:
+                    raise ValueError(f'{beginning} too low for the {intervalType} range')
+                if int(end) < int(beginning):
+                    raise ValueError(f'{end} is greater than {beginning} for the {intervalType} range')
+
+                # Silently correcting to avoid usually-valid date overruns like a 30 overflowing Feb 28
+                end = int(end) if int(end) in validRange else validMax
+                parsedValues.extend(range(int(beginning), int(end)+1, step))
+
+            # "*" used to mean every valid value
+            elif uV == '*':
+                parsedValues.extend(range(validMin, validMax+1, step))
+
+            else:
+                if int(uV) not in validRange:
+                    raise ValueError(f'{uV} out of range for {intervalType}')
+                parsedValues.append(int(uV))
+        
+        return sorted(list(set(parsedValues)))
+                
+
+    def shouldBackup(self):
+        # Accepts no input
+        # Returns True if the source has had a backup interval elapse since the script was last run, else False.
+        currentDate = LASTRUN.date()
+        endDate = TIME.date()
+
+        while currentDate <= endDate:
+            # Only check days that match the cron constraints
+            candidateDay = datetime.datetime.combine(currentDate, datetime.datetime.min.time())
+            
+            if (candidateDay.month in self._intervalDict['month'] and
+                candidateDay.day in self._intervalDict['dayOfMonth'] and
+                (candidateDay.weekday() in self._intervalDict['dayOfWeek'] or 
+                (7 in self._intervalDict['dayOfWeek'] and candidateDay.weekday() == 6))):
+
+                # Now check each valid hour/minute on this day
+                for hour in self._intervalDict['hour']:
+                    for minute in self._intervalDict['minute']:
+                        try:
+                            candidate = candidateDay.replace(hour=hour, minute=minute)
+                            if LASTRUN < candidate <= TIME:
+                                return True
+                        except ValueError:
+                            continue  # Skip invalid times like Feb 30
+            currentDate += timedelta(days=1)
+
+        return False
+
+
+
+
+
+        
 
 
 class Destination:
@@ -30,13 +147,19 @@ class Destination:
         self.source_path = source_path
         self.dest_path = dest_path
         self.method = config['method']['type']
-        self.intervals = config['intervals']
+        self.interval = Interval(config['intervals'])
 
         # Check to see if backup is needed for each configured interval
         self.intervalDict = {}
         for interval in self.intervals.keys():
             if (TIME - datetime.timedelta(**{interval:1})) > LASTRUN:
                 self.intervalDict[interval] = self.intervals[interval]
+    
+    
+
+
+
+
 
     def backup(self):
         for interval in self.intervalDict.keys():
