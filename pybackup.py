@@ -8,28 +8,28 @@ CONFIG_FILE = CONFIG_LOCATION / 'config.yaml'
 SCRIPT_LOCATION = pathlib.Path('/bin/pybackup.py')
 BACKUP_LOCATION = pathlib.Path('/opt/backups')
 SERVICE_PATH = pathlib.Path('/etc/systemd/system/pybackup.service')
-ROOT = os.geteuid() == 0
+IS_ROOT = os.geteuid() == 0
 UID = os.geteuid()
 TIME = datetime.datetime.now().replace(second=0, microsecond=0)
 TIME_STR = TIME.strftime('%Y-%m-%d_%H:%M')
 LASTRUN_FILE = BACKUP_LOCATION / 'lastrun.txt'
 
-with open(LASTRUN_FILE, 'r') as f:
-    LASTRUN = datetime.datetime.fromtimestamp(int(f.read()))
-
-# list should give list of backed-up directories and timestamps; restore should take directory and timestamp to 
-# check file perms - don't show other users' files to nonroot users
-# to implement: scp, rsync, smb 
+try:
+    with open(LASTRUN_FILE, 'r') as f:
+        LASTRUN = datetime.datetime.fromtimestamp(int(f.read()))
+except FileNotFoundError:
+    LASTRUN = datetime.datetime.fromtimestamp(0)
 
 
 class Interval:
     # Takes a cron-style string "*/5 - 1,3,7 - 30 - 10-12 - *"
-    # Intended use is to verify validity when instantiated, then check if the next backup should be started using "<object>.shouldBackup()"
+    # Intended use is to verify validity when instantiated, then check if the next backup should be started using "<object>.should_backup()"
 
     def __init__(self, cron_string):
-        self._intervalDict = OrderedDict.fromkeys(self.FIELD_NAMES)
+        self.FIELD_NAMES = ['minute', 'hour', 'dayOfMonth', 'month', 'dayOfWeek']
+        self._interval_dict = OrderedDict.fromkeys(self.FIELD_NAMES)
 
-        self._validRanges = {
+        self._valid_ranges = {
             'minute': range(0, 60),
             'hour': range(0, 24),
             'dayOfMonth': range(1, calendar.monthrange(TIME.year, TIME.month)[1]+1),
@@ -45,101 +45,93 @@ class Interval:
         # Raises ValueErrors if the number of fields is incorrect
         # Returns lists of valid ints for each interval
 
-        FIELD_NAMES = ['minute', 'hour', 'dayOfMonth', 'month', 'dayOfWeek']
-
         fields = cron_string.strip().split()
         if len(fields) != 5:
             raise ValueError("Cron string must have exactly 5 fields")
 
-        for name, value in zip(FIELD_NAMES, fields):
-            self._intervalDict[name] = self._parseInterval(name, value)
+        for name, value in zip(self.FIELD_NAMES, fields):
+            self._interval_dict[name] = self._parse_interval(name, value)
 
 
-    def _parseInterval(self, intervalType, intervalString):
+    def _parse_interval(self, interval_type, interval_string):
         # Takes a cron-style string for a given interval: "*/5", "1,3,7", or "2-6"
         # Returns a list of valid values
         # Raises ValueErrors if given values are out of range
 
-        validMin = self._validRanges[intervalType][0]
-        validMax = self._validRanges[intervalType][-1]
-        validRange = self._validRanges[intervalType]
+        valid_min = self._valid_ranges[interval_type][0]
+        valid_max = self._valid_ranges[interval_type][-1]
+        valid_range = self._valid_ranges[interval_type]
 
         # "/" used to set step value
         values = []
-        if '/' in intervalString:
-            if intervalString.count('/') > 1:
+        if '/' in interval_string:
+            if interval_string.count('/') > 1:
                 raise ValueError('Can only have one "/" in interval')
-            intervalString, step = intervalString.split('/')
+            interval_string, step = interval_string.split('/')
             step = int(step)
         else:
             step = 1
         
         # "," used to denote lists of values
-        # unparsedValues is a list of strings, parsedValues is a list of integers generated from the strings
-        unparsedValues = intervalString.split(',')
-        parsedValues = []
+        # unparsed_values is a list of strings, parsed_values is a list of integers generated from the strings
+        unparsed_values = interval_string.split(',')
+        parsed_values = []
 
-        for uV in unparsedValues:
+        for uV in unparsed_values:
             # "-" used to denote ranges
             if '-' in uV:
                 if uV.count('-') > 1:
                     raise ValueError('Can only have one "-" in range')
                 
                 beginning, end = uV.split('-')
-                if int(beginning) < validMin:
-                    raise ValueError(f'{beginning} too low for the {intervalType} range')
+                if int(beginning) < valid_min:
+                    raise ValueError(f'{beginning} too low for the {interval_type} range')
                 if int(end) < int(beginning):
-                    raise ValueError(f'{end} is greater than {beginning} for the {intervalType} range')
+                    raise ValueError(f'{end} is greater than {beginning} for the {interval_type} range')
 
                 # Silently correcting to avoid usually-valid date overruns like a 30 overflowing Feb 28
-                end = int(end) if int(end) in validRange else validMax
-                parsedValues.extend(range(int(beginning), int(end)+1, step))
+                end = int(end) if int(end) in valid_range else valid_max
+                parsed_values.extend(range(int(beginning), int(end)+1, step))
 
             # "*" used to mean every valid value
             elif uV == '*':
-                parsedValues.extend(range(validMin, validMax+1, step))
+                parsed_values.extend(range(valid_min, valid_max+1, step))
 
             else:
-                if int(uV) not in validRange:
-                    raise ValueError(f'{uV} out of range for {intervalType}')
-                parsedValues.append(int(uV))
+                if int(uV) not in valid_range:
+                    raise ValueError(f'{uV} out of range for {interval_type}')
+                parsed_values.append(int(uV))
         
-        return sorted(list(set(parsedValues)))
+        return sorted(list(set(parsed_values)))
                 
 
-    def shouldBackup(self):
+    def should_backup(self):
         # Accepts no input
         # Returns True if the source has had a backup interval elapse since the script was last run, else False.
-        currentDate = LASTRUN.date()
-        endDate = TIME.date()
+        current_date = LASTRUN.date()
+        end_date = TIME.date()
 
-        while currentDate <= endDate:
+        while current_date <= end_date:
             # Only check days that match the cron constraints
-            candidateDay = datetime.datetime.combine(currentDate, datetime.datetime.min.time())
+            candidate_day = datetime.datetime.combine(current_date, datetime.datetime.min.time())
             
-            if (candidateDay.month in self._intervalDict['month'] and
-                candidateDay.day in self._intervalDict['dayOfMonth'] and
-                (candidateDay.weekday() in self._intervalDict['dayOfWeek'] or 
-                (7 in self._intervalDict['dayOfWeek'] and candidateDay.weekday() == 6))):
+            if (candidate_day.month in self._interval_dict['month'] and
+                candidate_day.day in self._interval_dict['dayOfMonth'] and
+                (candidate_day.weekday() in self._interval_dict['dayOfWeek'] or
+                 (7 in self._interval_dict['dayOfWeek'] and candidate_day.weekday() == 6))):
 
                 # Now check each valid hour/minute on this day
-                for hour in self._intervalDict['hour']:
-                    for minute in self._intervalDict['minute']:
+                for hour in self._interval_dict['hour']:
+                    for minute in self._interval_dict['minute']:
                         try:
-                            candidate = candidateDay.replace(hour=hour, minute=minute)
+                            candidate = candidate_day.replace(hour=hour, minute=minute)
                             if LASTRUN < candidate <= TIME:
                                 return True
                         except ValueError:
                             continue  # Skip invalid times like Feb 30
-            currentDate += timedelta(days=1)
+            current_date += datetime.timedelta(days=1)
 
         return False
-
-
-
-
-
-        
 
 
 class Destination:
@@ -147,33 +139,14 @@ class Destination:
         self.source_path = source_path
         self.dest_path = dest_path
         self.method = config['method']['type']
-        self.interval = Interval(config['intervals'])
-
-        # Check to see if backup is needed for each configured interval
-        self.intervalDict = {}
-        for interval in self.intervals.keys():
-            if (TIME - datetime.timedelta(**{interval:1})) > LASTRUN:
-                self.intervalDict[interval] = self.intervals[interval]
+        self.interval = Interval(config['interval'])
     
-    
-
-
-
-
 
     def backup(self):
-        for interval in self.intervalDict.keys():
-            interval_backup_location = BACKUP_LOCATION / interval
-            interval_backup_dir = interval_backup_location / TIME_STR
-
-            interval_backup_location.mkdir(mode=0o700)
-            interval_backup_dir.mkdir(mode=0o700)
-
-            
-            
+        if self.interval.should_backup():
+            self.method.backup(self.source_path, self.dest_path)
 
 
-            
 
 
 
@@ -210,17 +183,46 @@ class Source:
                 
 
 
+def restore(): return None
+def printlist(): return None
+def scheduled(): return None
+def cleanup(): return None
 
-
-def parseArgs():
+def parse_args():
     parser = argparse.ArgumentParser(prog='pybackup.py')
-    parser.add_argument('action', choices=['install', 'uninstall','backup', 'cleanup', 'list', 'restore', 'daemon'])
-        # add subparsers for specific directories to back up?
+
+    subparsers = parser.add_subparsers(dest='action', required=True, help='Available actions')
+
+    parser_install = subparsers.add_parser('install', help='Install something')
+    parser_install.set_defaults(func=install)
+
+    parser_uninstall = subparsers.add_parser('uninstall', help='Uninstall something')
+    parser_uninstall.set_defaults(func=uninstall)
+
+    parser_backup = subparsers.add_parser('backup', help='Backup files or directories')
+    parser_backup.add_argument('--target', required=True, help='Target directory or file to back up')
+    parser_backup.set_defaults(func=backup)
+
+    parser_restore = subparsers.add_parser('restore', help='Restore from a backup')
+    parser_restore.add_argument('--id', required=True, help='ID of the backup to restore')
+    parser_restore.set_defaults(func=restore)
+
+    parser_cleanup = subparsers.add_parser('cleanup', help='Cleanup old backups')
+    parser_cleanup.add_argument('--id', required=False, help='ID of the backup to remove')
+    parser_cleanup.add_argument('--all', required=False, help='Purge all backups from given source')
+    parser_cleanup.set_defaults(func=cleanup)
+
+    parser_list = subparsers.add_parser('list', help='List backups')
+    parser_list.set_defaults(func=printlist)
+
+    parser_scheduled = subparsers.add_parser('scheduled', help='Run quietly as if by a scheduler')
+    parser_scheduled.set_defaults(func=scheduled)
+
     return parser.parse_args()
 
 
 def install():
-    if not ROOT:
+    if not IS_ROOT:
         print('Installation must be done with root permissions')
         sys.exit()
 
@@ -258,7 +260,7 @@ def install():
 
 
 def uninstall():
-    if not ROOT:
+    if not IS_ROOT:
         print('Uninstallation must be done with root permissions')
         sys.exit()
 
@@ -267,6 +269,7 @@ def uninstall():
 
     remove = input('Delete backups? [y/N] ')
     if remove.lower().strip() == 'y':
+        
         shutil.rmtree(BACKUP_LOCATION)
 
     CONFIG_LOCATION.rmdir()
@@ -283,7 +286,7 @@ def backup():
 
     # Backdate the timestamp a touch to ensure that marginal files aren't missed
     with open(LASTRUN_FILE, 'w') as f:
-        f.write(int(TIME.timestamp()) - 2)
+        f.write(str(TIME.timestamp() - 2))
 
 
 
@@ -291,11 +294,5 @@ def backup():
 
 
 if __name__ == "__main__":
-    args = parseArgs()
-
-    match args.action:
-        case 'install': install()
-        case 'uninstall': uninstall()
-        case 'backup': backup()
-        case 'cleanup': cleanup()
-        case 'list': lst()
+    args = parse_args()
+    args.func(args)
