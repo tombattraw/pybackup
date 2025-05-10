@@ -1,19 +1,28 @@
 source:
   # source is recursive; will back up all files and subdirectories
-  path: "/home/user/"
-  destinations:
+  - path: "/home/user/"
+    destinations:
       - path: "/archive/backup/user/"
         method:
-          type: # [scp, rsync, smb, cp]
-          key: "/home/user/.ssh/id_rsa"
+          type: "cp"
+          key: # "/home/user/.ssh/id_rsa"
           username: # "user"
           password: # "password"
-    
+
         # Interval uses cron syntax: "minute - hour - day of month - month - day of week"
         # Use "*" to mean every one of that interval, "*/N" for every N intervals
         # Use "," to give a list of values
         # Use '-' to give a range of values
         # Online cron generators strongly recommended
         # Ensure there's a space before and after each "-" between fields to prevent confusion with ranges
-        # 
+        #
         interval: "* * * * *"
+
+  - path: "/tmp/backup"
+    destinations:
+      - path: "192.168.0.255:/archive/backup/user"
+        method:
+          type: "scp"
+          key: "/home/user/.ssh/id_rsa"
+          username: "user"
+          password: "password"

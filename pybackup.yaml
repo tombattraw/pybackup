@@ -13,13 +13,13 @@
 #   If the destination has no free space left, the script will print a warning to the terminal and "/var/log/pybackup.log".
 
 authorized_users:
-  - username: "user1"
+  user1:
     quota: "10%"
     allowed_dirs:
       - "/home/user1"
       - "/opt/"
 
-  - username: "user2"
+  user2:
     quota: "10GB"
     allowed_dirs:
       - "/"
