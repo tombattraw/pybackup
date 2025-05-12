@@ -2,15 +2,12 @@
 
 import argparse
 import calendar
-import gzip
-import hashlib
 import os
 import pwd
 import shutil
 import subprocess
 import sys
 import yaml
-import functools
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -40,7 +37,7 @@ class Interval:
     FIELD_NAMES: list[str] = ['minute', 'hour', 'day_of_month', 'month', 'day_of_week']
 
     def __init__(self, cron_string: str):
-        self._interval_dict: OrderedDict[str, range] = OrderedDict.fromkeys(self.FIELD_NAMES)
+        self._interval_dict: OrderedDict[str, list[int]] = OrderedDict.fromkeys(self.FIELD_NAMES)
 
         self._valid_ranges: dict[str, range] = {
             'minute': range(0, 60),
@@ -134,7 +131,7 @@ class Interval:
                     for minute in self._interval_dict['minute']:
                         try:
                             candidate = candidate_day.replace(hour=hour, minute=minute)
-                            if LASTRUN < candidate <= TIME:
+                            if LASTRUN < candidate <= START_TIME:
                                 return True
                         except ValueError:
                             continue  # Skip invalid times like Feb 30
@@ -144,37 +141,44 @@ class Interval:
 
 
 class Destination:
-    def __init__(self, source_path: Path, dest_path: Path, config: dict):
+    # Represents a destination path to back up to and a means of getting there
+    def __init__(self, source_path: Path, config: dict):
         self.source_path = source_path
-        self.dest_path = dest_path
+        self.config = config
         self.method = config['method']['type']
+        self.path = config['path']
         self.interval = Interval(config['interval'])
     
 
     def backup(self):
         if self.interval.should_backup():
-            self.method.backup(self.source_path, self.dest_path)
+            self.method.backup(self.source_path, self.path)
 
 
 class Source:
-    def __init__(self, path, destinations):
+    # Represents a directory on the local system and all contents and subdirectories
+    def __init__(self, path: Path, destinations: list[dict[dict]]):
         self.path = path
         self.dirs = []
         self.files = []
-        self.walk()
-        self.destinations = [Destination(self.path, x, destinations[x]) for x in destinations.keys()]
-    
-    def walk(self):
+
+        self.destinations: list[Destination] = [Destination(self.path, x) for x in destinations]
+
+
+    def _walk(self) -> None:
         # Create a list of file, timestamp tuples of the directories and files
         # Sort it by path length to ensure the directories and files aren't created out of order later
-        self.dirs = sorted([p for p in self.path.rglob('*') if p.is_dir()], key=lambda p: len(p.parts))
-        self.dirs = [(p, datetime.fromtimestamp(p.stat().st_mtime)) for p in self.dirs]
+        dirs = sorted([p for p in self.path.rglob('*') if p.is_dir()], key=lambda p: len(p.parts))
+        self.dirs: list[tuple[Path, datetime]] = [(p, datetime.fromtimestamp(p.stat().st_mtime)) for p in dirs]
 
-        self.files = sorted([p for p in self.path.rglob('*') if p.is_file()], key=lambda p: len(p.parts))
-        self.files = [(p, datetime.fromtimestamp(p.stat().st_mtime)) for p in self.dirs]
+        files = sorted([p for p in self.path.rglob('*') if p.is_file()], key=lambda p: len(p.parts))
+        self.files: list[tuple[Path, datetime]] = [(p, datetime.fromtimestamp(p[0].stat().st_mtime)) for p in files]
 
 
     def backup(self, destinations=None):
+        # First, get an idea for what's in the directory and needs to be backed up
+        self._walk()
+
         # The check is to allow partial backups to be implemented later
         if not destinations:
             for destination in self.destinations:
@@ -231,10 +235,6 @@ def check_backup_permissions(target_user: str, targets: list[Path]) -> bool:
 
 
 
-
-
-
-
 def restore(): return None
 def printlist(): return None
 def scheduled(): return None
@@ -254,6 +254,7 @@ def is_valid_user(username: str) -> str:
         raise argparse.ArgumentTypeError(f'{username} not an existing user')
     return username
 
+
 def parse_args():
     parser = argparse.ArgumentParser(prog='pybackup.py')
 
@@ -267,19 +268,24 @@ def parse_args():
 
     parser_backup = subparsers.add_parser('backup', help='Backup directories')
     parser_backup.add_argument('--target', required=False, help=f'Target directory or file to back up. Default is all allowed in {CONFIG_FILE}', type=is_existing_dir)
-    parser_backup.add_argument('--user', required=False, help='Run backup for specified user. Requires root', type=is_valid_user, default=os.getusername())
+    parser_backup.add_argument('--user', required=False, help='Run backup for specified user. Requires root', type=is_valid_user, default=pwd.getpwuid(os.getuid()).pw_name)
+    parser_backup.add_argument('--all', required=False, help='Run backup for all users. Requires root', action='store_true')
+    parser_backup.add_argument('--type', required=False, help='Only back up to destinations using this given method', choices=['scp', 'cp', 'rsync', 'smb'])
     parser_backup.set_defaults(func=backup)
 
     parser_restore = subparsers.add_parser('restore', help='Restore from a backup')
-    parser_restore.add_argument('--id', required=True, help='ID of the backup to restore')
+    parser_restore.add_argument('--id', required=False, help='ID of the backup to restore. If not given, assume latest backup')
+    parser_restore.add_argument('--source', required=False, help='Source to restore. If not given, assume all should be restored from latest')
     parser_restore.set_defaults(func=restore)
 
     parser_cleanup = subparsers.add_parser('cleanup', help='Cleanup old backups')
     parser_cleanup.add_argument('--id', required=False, help='ID of the backup to remove')
+    parser_cleanup.add_argument('--user', required=False, help='Clean backups belonging to given user. Requires root', type=is_valid_user, default=pwd.getpwuid(os.getuid()).pw_name)
     parser_cleanup.add_argument('--all', required=False, help='Remove all backups from given source')
     parser_cleanup.set_defaults(func=cleanup)
 
     parser_list = subparsers.add_parser('list', help='List backups')
+    parser_list.add_argument('--user', required=False, help='List backups belonging to given user. Requires root', type=is_valid_user, default=pwd.getpwuid(os.getuid()).pw_name)
     parser_list.set_defaults(func=printlist)
 
     parser_scheduled = subparsers.add_parser('scheduled', help='Run quietly as if by a scheduler')
@@ -289,7 +295,7 @@ def parse_args():
 
 
 def install():
-    if not IS_ROOT:
+    if not (os.getuid() == 0):
         print('Installation must be done with root permissions')
         sys.exit()
 
@@ -327,7 +333,7 @@ def install():
 
 
 def uninstall():
-    if not IS_ROOT:
+    if not (os.getuid == 0):
         print('Uninstallation must be done with root permissions')
         sys.exit()
 
@@ -345,9 +351,6 @@ def uninstall():
 
 
 def backup(args):
-    current_uid = os.getuid()
-    current_user = pwd.getpwuid(current_uid).pw_name
-
     if not check_backup_permissions(args.backup.user, args.backup.target):
         raise PermissionError('Action not authorized')
 
@@ -356,6 +359,29 @@ def backup(args):
 
     with open(home_dir / 'backupconfig.yaml') as f:
         backup_config = yaml.safe_load(f)
+
+    # If a backup target isn't explicitly given, backup everything allowed
+    targets: list[dict]
+    if not args.backup.target:
+        sources: list[dict] = backup_config['source']
+
+        for source in sources:
+            if not source['path'].exists():
+                raise FileExistsError(f'Backup source {source['path']} does not exist')
+
+    # Otherwise, check the config to see which method, destination, and other details are applicable
+    # Normalize to a list of dictionaries to match the other possibility
+    # The existence check is done in argparse, so no need to match
+    else:
+        for source in backup_config['source']:
+            if Path(args.backup.target).is_relative_to(Path(source['path'])):
+                targets = [source]
+                targets[0]['path'] = args.backup.target
+                break
+
+
+
+
 
 
 

@@ -1,6 +1,6 @@
 # PyBackUp config file. Controls master behavior.
 
-# Username controls access. The script will call itself as that username to back their files up, reading the "backupconfig.yaml" file from their home directory
+# Username controls access. If executed as root, the script will re-execute itself as that username to back their files up, reading the "backupconfig.yaml" file from their home directory
 #   This is done for security. Writing your own security system is an excellent way to create all new and exciting privilege escalation vectors.
 #   These may hold sensitive information such as passwords. CHANGE PERMISSIONS TO 0600! The command is "chmod 0600 /home/user/backupconfig.yaml"
 
